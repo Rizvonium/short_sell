@@ -78,6 +78,7 @@
     Chart.defaults.font.size = 11;
     charts[id] = new Chart($(id), {
       type: "line",
+      plugins: opt.plugins || [],
       data: {
         labels,
         datasets: datasets.map((d) => Object.assign({ borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 3, tension: 0, fill: false }, d)),
@@ -566,17 +567,179 @@
     } else $("gm-z").parentElement.hidden = true;
   }
 
+  // ---------- TOURNAMENT ----------
+  let TN = null, tnSel = null, tnTimer = null, tnDay = null;
+  const TN_PALETTE = ["#2563c9", "#0e8a7e", "#7c3aed", "#d97706", "#15803d", "#db2777", "#0891b2", "#9333ea", "#65a30d"];
+  function tnPrepare() {
+    let ci = 0;
+    for (const s of TN.strategies) {
+      if (s.kind === "candidate") { s.color = TN_PALETTE[ci++ % TN_PALETTE.length]; s.dash = false; }
+      else {
+        const key = s.id.replace(/^pair-/, "").replace(/-tuned$/, "");
+        s.color = S[key] ? S[key].color : "#6b7280";
+        s.dash = true;
+      }
+    }
+    tnSel = (TN.prereg && TN.prereg.id) || TN.strategies[0].id;
+  }
+  const tnList = () => TN.strategies.filter((s) => $("tn-base").checked || s.kind === "candidate");
+  const kindChip = (k) => k === "candidate" ? '<span class="chip good">new</span>' : k === "benchmark" ? '<span class="chip warn">long only</span>' : '<span class="chip">baseline</span>';
+  function renderTournament() {
+    if (!TN) { $("tab-tournament").querySelector(".panel").innerHTML = '<p class="muted">Tournament results are not built yet. Run <code>node research/build_tournament.js</code>.</p>'; return; }
+    renderChampion();
+    renderTnTable();
+    renderTnChart();
+    renderTnDetail();
+    tnBoard(null);
+  }
+  function renderChampion() {
+    const champ = TN.strategies.find((s) => TN.prereg && s.id === TN.prereg.id);
+    const best = TN.strategies.slice().sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
+    const bestBase = TN.strategies.filter((s) => s.kind !== "candidate").sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
+    const c = champ || best;
+    const line = (s, mk) => {
+      const h = s.markets[mk].holdout, d = s.markets[mk].dev;
+      return `<tr><td>${mk === "US" ? "United States" : "India"}</td><td class="num">${f2(d.sharpe)}</td><td class="num"><b>${f2(h.sharpe)}</b></td><td class="num ${cls(h.cagr)}">${pct(h.cagr)}</td><td class="num neg">${pct(h.maxDD)}</td></tr>`;
+    };
+    const rank = TN.strategies.slice().sort((a, b) => b.holdoutScore - a.holdoutScore).findIndex((s) => s.id === c.id) + 1;
+    $("tn-champ").innerHTML = `<div class="champ"><div>
+        <div class="badge">${champ ? "Pre-registered champion" : "Holdout leader"}</div>
+        <h3>${esc(c.name)}</h3>
+        <p class="muted">${esc(c.description)}</p>
+        ${champ && TN.prereg.date ? `<p class="small muted">Chosen on ${esc(TN.prereg.date)} from development results only, before any strategy was run on 2021+ prices.</p>` : ""}
+      </div><div>
+        <div class="stats">
+          <div class="stat"><div class="k">Holdout score</div><div class="v ${cls(c.holdoutScore)}">${f2(c.holdoutScore)}</div><div class="s">rank ${rank} of ${TN.strategies.length} · dev ${f2(c.devScore)}</div></div>
+          <div class="stat"><div class="k">Best baseline</div><div class="v">${f2(bestBase.holdoutScore)}</div><div class="s">${esc(bestBase.name)}</div></div>
+          <div class="stat"><div class="k">Holdout winner</div><div class="v">${f2(best.holdoutScore)}</div><div class="s">${esc(best.name)}</div></div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Market</th><th class="num">Dev Sharpe</th><th class="num">Holdout Sharpe</th><th class="num">Holdout CAGR</th><th class="num">Holdout max DD</th></tr></thead><tbody>${line(c, "US")}${line(c, "IN")}</tbody></table></div>
+      </div></div>`;
+  }
+  function renderTnTable() {
+    const key = $("tn-sort").value;
+    const rows = tnList().slice().sort((a, b) => b[key] - a[key]);
+    $("tn-table").innerHTML = `<thead><tr><th>#</th><th>Strategy</th><th class="num">Dev score</th><th class="num">Holdout score</th><th class="num">US Sharpe</th><th class="num">India Sharpe</th><th class="num">US CAGR</th><th class="num">India CAGR</th><th class="num">Worst DD</th><th class="num">Turnover/yr</th><th class="num">Avg gross</th></tr></thead><tbody>` +
+      rows.map((s, i) => {
+        const U = s.markets.US, I = s.markets.IN, dd = Math.min(U.holdout.maxDD, I.holdout.maxDD);
+        const to = (U.full.turnoverPerYear + I.full.turnoverPerYear) / 2, g = (U.full.avgGross + I.full.avgGross) / 2;
+        const pre = TN.prereg && s.id === TN.prereg.id ? ' <span class="chip good">champion</span>' : "";
+        return `<tr class="click ${s.id === tnSel ? "sel" : ""}" data-id="${s.id}"><td class="num">${i + 1}</td>
+          <td><span style="color:${s.color}">■</span> <b>${esc(s.name)}</b> ${kindChip(s.kind)}${pre}</td>
+          <td class="num">${f2(s.devScore)}</td><td class="num"><b class="${cls(s.holdoutScore)}">${f2(s.holdoutScore)}</b></td>
+          <td class="num">${f2(U.holdout.sharpe)}</td><td class="num">${f2(I.holdout.sharpe)}</td>
+          <td class="num ${cls(U.holdout.cagr)}">${pct(U.holdout.cagr)}</td><td class="num ${cls(I.holdout.cagr)}">${pct(I.holdout.cagr)}</td>
+          <td class="num neg">${pct(dd)}</td><td class="num">${to.toFixed(1)}×</td><td class="num">${g.toFixed(2)}</td></tr>`;
+      }).join("") + "</tbody>";
+  }
+  function tnSplitIdx(mk) { return TN.markets[mk].dates.findIndex((d) => d >= TN.split); }
+  function renderTnChart() {
+    const mk = $("tn-mkt").value, dates = TN.markets[mk].dates, si = tnSplitIdx(mk);
+    const shade = css("--sunk"), lineC = css("--muted");
+    const holdoutShade = {
+      id: "holdout",
+      beforeDatasetsDraw(chart) {
+        const x = chart.scales.x, a = chart.chartArea, px = x.getPixelForValue(si);
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.fillStyle = shade;
+        ctx.fillRect(px, a.top, a.right - px, a.bottom - a.top);
+        ctx.strokeStyle = lineC; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+        ctx.fillStyle = lineC; ctx.font = '11px "JetBrains Mono", monospace';
+        ctx.fillText("holdout →", px + 6, a.top + 14);
+        ctx.restore();
+      },
+    };
+    const list = tnList();
+    const upto = tnDay == null ? dates.length - 1 : tnDay;
+    lineChart("tn-chart", dates, list.map((s) => ({
+      label: s.name,
+      data: s.markets[mk].eq.map((v, i) => (i <= upto ? v : null)),
+      borderColor: s.color,
+      borderWidth: s.id === tnSel ? 2.6 : s.kind === "candidate" ? 1.6 : 1.1,
+      borderDash: s.dash ? [4, 3] : undefined,
+    })), { log: $("tn-scale").value === "log", fmt: (v) => v.toFixed(3), plugins: [holdoutShade] });
+    legend("tn-legend", list.map((s) => ({ label: s.name, color: s.color, dash: s.dash })));
+  }
+  function tnBoard(day) {
+    const mk = $("tn-mkt").value, dates = TN.markets[mk].dates, si = tnSplitIdx(mk);
+    const d = day == null ? dates.length - 1 : day;
+    const list = tnList();
+    const rows = list.map((s) => {
+      const eq = s.markets[mk].eq.slice(si, d + 1).map((v, _, a) => v / a[0]);
+      const r = [];
+      for (let i = 1; i < eq.length; i++) r.push(eq[i] / eq[i - 1] - 1);
+      const m = r.length ? Stats.mean(r) : 0, sd = r.length > 1 ? Stats.std(r) : 0;
+      let peak = 1, dd = 0;
+      for (const v of eq) { peak = Math.max(peak, v); dd = Math.min(dd, v / peak - 1); }
+      return { s, v: eq[eq.length - 1], sh: sd ? (m / sd) * Math.sqrt(52) : 0, dd };
+    });
+    const ranked = rows.slice().sort((a, b) => b.v - a.v);
+    const board = $("tn-board"), sig = list.map((s) => s.id).join();
+    if (board.dataset.built !== sig) {
+      board.innerHTML = `<div class="lb-row head"><span>#</span><span>Strategy</span><span class="c">Growth of 1</span><span class="c">Return</span><span class="c">Sharpe</span><span class="c">Max DD</span><span class="c">Type</span></div>` +
+        list.map((s) => `<div class="lb-row" data-k="${s.id}"></div>`).join("");
+      board.dataset.built = sig;
+    }
+    const first = board.querySelector(".lb-row[data-k]");
+    const H = first && first.offsetHeight ? first.offsetHeight + 6 : 50;
+    rows.forEach((r, i) => {
+      const rank = ranked.indexOf(r), el = board.querySelector(`[data-k="${r.s.id}"]`);
+      el.style.transform = `translateY(${(rank - i) * H}px)`;
+      el.innerHTML = `<span class="rk">${rank + 1}</span><span class="nm"><i style="background:${r.s.color}"></i><span>${esc(r.s.name)}</span></span>
+        <span class="c">${r.v.toFixed(3)}</span><span class="c ${cls(r.v - 1)}">${pct(r.v - 1)}</span><span class="c">${f2(r.sh)}</span>
+        <span class="c neg">${pct(r.dd)}</span><span class="c">${kindChip(r.s.kind)}</span>`;
+    });
+    statTiles("tn-race-stats", [
+      { k: "Holdout race", v: `${dates[si]} → ${dates[d]}`, s: `${mk === "US" ? "United States" : "India"} · weekly marks` },
+      { k: "In the lead", v: esc(ranked[0].s.name), s: `${pct(ranked[0].v - 1)} since ${dates[si].slice(0, 4)}` },
+    ]);
+  }
+  function tnStop() { if (tnTimer) clearInterval(tnTimer); tnTimer = null; $("tn-race").textContent = "Race the holdout"; }
+  function tnPlay() {
+    if (tnTimer) { tnStop(); return; }
+    const mk = $("tn-mkt").value, dates = TN.markets[mk].dates, si = tnSplitIdx(mk);
+    if (tnDay == null || tnDay >= dates.length - 1) tnDay = si;
+    $("tn-race").textContent = "Pause";
+    renderTnChart();
+    tnTimer = setInterval(() => {
+      tnDay = Math.min(dates.length - 1, tnDay + 1);
+      const ch = charts["tn-chart"];
+      tnList().forEach((s, i) => { ch.data.datasets[i].data = s.markets[mk].eq.map((v, j) => (j <= tnDay ? v : null)); });
+      ch.update("none");
+      tnBoard(tnDay);
+      if (tnDay >= dates.length - 1) { tnStop(); tnDay = null; }
+    }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 20 : 70);
+  }
+  function renderTnDetail() {
+    const s = TN.strategies.find((x) => x.id === tnSel);
+    if (!s) return;
+    const yrs = s.markets.US.years.map((y, i) => ({ year: y.year, us: y.ret, in: (s.markets.IN.years[i] || {}).ret }));
+    const mrow = (mk, seg) => {
+      const m = s.markets[mk][seg];
+      return `<tr><td>${mk === "US" ? "United States" : "India"} · ${seg === "dev" ? "2013–2020" : "2021–today"}</td><td class="num">${f2(m.sharpe)}</td><td class="num ${cls(m.cagr)}">${pct(m.cagr)}</td><td class="num">${pct(m.vol)}</td><td class="num neg">${pct(m.maxDD)}</td></tr>`;
+    };
+    $("tn-detail").innerHTML = `<div class="row"><h3><span style="color:${s.color}">■</span> ${esc(s.name)}</h3>${kindChip(s.kind)}</div>
+      <p class="muted">${esc(s.description)}</p>
+      <div class="grid2">
+        <div class="table-wrap"><table><thead><tr><th>Period</th><th class="num">Sharpe</th><th class="num">CAGR</th><th class="num">Vol</th><th class="num">Max DD</th></tr></thead><tbody>${mrow("US", "dev")}${mrow("IN", "dev")}${mrow("US", "holdout")}${mrow("IN", "holdout")}</tbody></table></div>
+        <div class="table-wrap" style="max-height:340px"><table><thead><tr><th>Year</th><th class="num">United States</th><th class="num">India</th></tr></thead><tbody>${yrs.map((y) => `<tr class="${y.year >= +TN.split.slice(0, 4) ? "holdout" : ""}"><td class="mono">${y.year}${y.year >= +TN.split.slice(0, 4) ? " · holdout" : ""}</td><td class="num ${cls(y.us)}">${pct(y.us)}</td><td class="num ${cls(y.in)}">${y.in == null ? "–" : pct(y.in)}</td></tr>`).join("")}</tbody></table></div>
+      </div>`;
+  }
+
   // ---------- routing ----------
-  const TABS = ["story", "scan", "lab", "arena", "game", "research"];
+  const TABS = ["story", "scan", "lab", "tournament", "arena", "game", "research"];
   const rendered = {};
   function show(tab) {
     if (!TABS.includes(tab)) tab = "story";
     TABS.forEach((t) => { $("tab-" + t).hidden = t !== tab; });
     document.querySelectorAll("nav.tabs a").forEach((a) => a.setAttribute("aria-current", a.getAttribute("href") === "#" + tab ? "page" : "false"));
     if (tab !== "arena") stopArena();
+    if (tab !== "tournament" && TN) tnStop();
     if (!rendered[tab] || tab === "story") {
       rendered[tab] = true;
-      ({ story: renderStory, scan: renderScan, lab: () => { runLab(); runPortfolio(); }, arena: setupArena, game: () => { newGame(); renderScores(); } }[tab] || (() => {}))();
+      ({ story: renderStory, scan: renderScan, lab: () => { runLab(); runPortfolio(); }, arena: setupArena, tournament: renderTournament, game: () => { newGame(); renderScores(); } }[tab] || (() => {}))();
     }
     try { localStorage.setItem("tsl-tab", tab); } catch (e) { /* ignore */ }
   }
@@ -606,6 +769,11 @@
     ["lb-pair", "lb-from", "lb-cost", "lb-split"].forEach((id) => $(id).addEventListener("change", runLab));
     $("lb-table").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-k]"); if (tr) { labSel = tr.dataset.k; renderLab(); } });
     $("pf-run").addEventListener("click", runPortfolio);
+    $("tn-sort").addEventListener("change", renderTnTable);
+    $("tn-base").addEventListener("change", () => { tnStop(); tnDay = null; renderTournament(); });
+    ["tn-mkt", "tn-scale"].forEach((id) => $(id).addEventListener("change", () => { tnStop(); tnDay = null; renderTnChart(); tnBoard(null); }));
+    $("tn-race").addEventListener("click", () => TN && tnPlay());
+    $("tn-table").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) { tnSel = tr.dataset.id; renderTnTable(); renderTnChart(); renderTnDetail(); } });
     ["pf-mkt", "pf-train", "pf-split", "pf-n"].forEach((id) => $(id).addEventListener("change", runPortfolio));
     $("ar-mkt").addEventListener("change", () => { fillArenaSelect(); setupArena(); });
     ["ar-pair", "ar-len", "ar-cost"].forEach((id) => $(id).addEventListener("change", setupArena));
@@ -646,6 +814,8 @@
     try {
       const [m, c] = await Promise.all([fetch("data/market.json").then((r) => r.json()), fetch("data/classic.json").then((r) => r.json())]);
       DATA = m; CLASSIC = c;
+      try { TN = await fetch("data/tournament.json").then((r) => (r.ok ? r.json() : null)); } catch (e) { TN = null; }
+      if (TN) tnPrepare();
     } catch (e) {
       $("loading").textContent = "Could not load data/market.json. Serve the docs/ folder over HTTP (python -m http.server) instead of opening the file directly.";
       return;

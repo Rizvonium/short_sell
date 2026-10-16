@@ -150,6 +150,14 @@ tbody tr.click { cursor: pointer; }
 .board-wrap { overflow-x: auto; }
 .board-wrap .board { min-width: 620px; }
 
+/* Tournament */
+.champ { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr); gap: 20px; align-items: start; }
+.champ .badge { font: 600 11px/1 var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.champ h3 { font-size: 26px; margin-top: 6px; }
+.champ p { margin-top: 8px; }
+tr.holdout td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+@media (max-width: 760px) { .champ { grid-template-columns: 1fr; } }
+
 /* Game */
 .game-hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }

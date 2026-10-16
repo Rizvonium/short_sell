@@ -20,6 +20,7 @@
       <a href="#story">Coke vs Pepsi</a>
       <a href="#scan">Scanner</a>
       <a href="#lab">Train / Test Lab</a>
+      <a href="#tournament">Tournament</a>
       <a href="#arena">Strategy Arena</a>
       <a href="#game">Trading Game</a>
       <a href="#research">Research</a>
@@ -111,6 +112,35 @@
       <div class="chart"><canvas id="pf-chart"></canvas></div>
       <div class="table-wrap" style="max-height:300px"><table id="pf-table"></table></div>
     </div>
+  </section>
+
+  <!-- TOURNAMENT -->
+  <section class="tab" id="tab-tournament" hidden>
+    <div class="eyebrow">Walk-forward tournament · 97 stocks · US and NSE</div>
+    <h2>Which strategy actually wins?</h2>
+    <p class="muted">Every strategy below re-selects its pairs or stocks each January using only past prices, then trades the year after with 5 bps per side in costs, a 0.5% a year borrow fee on shorts and at most 1× gross exposure. The strategies were designed and tuned on 2013–2020 only. 2021 to today is a holdout nobody looked at until the champion had been picked.</p>
+    <div class="panel" id="tn-champ"></div>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Rank by</span><select id="tn-sort"><option value="holdoutScore" selected>Holdout Sharpe (2021–today)</option><option value="devScore">Development Sharpe (2013–2020)</option></select></label>
+        <label class="check"><input type="checkbox" id="tn-base" checked> Show baselines</label>
+      </div>
+      <div class="table-wrap"><table id="tn-table"></table></div>
+      <p class="small muted">Score is the average of the US and India Sharpe ratios. Click a row to inspect it.</p>
+    </div>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="tn-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Scale</span><select id="tn-scale"><option value="lin">Linear</option><option value="log">Log</option></select></label>
+        <button class="primary" id="tn-race">Race the holdout</button>
+      </div>
+      <div class="stats" id="tn-race-stats"></div>
+      <div class="board-wrap"><div class="board" id="tn-board"></div></div>
+      <div class="legend" id="tn-legend"></div>
+      <div class="chart tall"><canvas id="tn-chart"></canvas></div>
+      <p class="small muted">Growth of 1 unit of capital. The shaded region is the holdout.</p>
+    </div>
+    <div class="panel" id="tn-detail"></div>
   </section>
 
   <!-- ARENA -->
@@ -220,6 +250,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="js/stats.js"></script>
 <script src="js/strategies.js"></script>
+<script src="js/portfolio.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

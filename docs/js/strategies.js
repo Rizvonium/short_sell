@@ -68,20 +68,30 @@
   }
 
   // Kalman filter for a time-varying hedge ratio (as in E. Chan, "Algorithmic Trading").
+  // The forecast error is standardized by its own trailing 60-day volatility, which keeps the
+  // entry thresholds meaningful on log prices whatever the noise level of the pair.
   function kalmanZ(pa, pb, delta) {
     const n = pa.length, z = new Float64Array(n).fill(NaN), beta = new Float64Array(n).fill(1);
-    const Vw = delta / (1 - delta), Ve = 1e-3;
-    let th = [0, 0], P = [[0, 0], [0, 0]], R = null;
+    const Vw = delta / (1 - delta), Ve = 1e-4, W = 60;
+    let th = [0, 0], P = [[1, 0], [0, 1]];
+    const e = new Float64Array(n);
+    let s1 = 0, s2 = 0;
     for (let t = 0; t < n; t++) {
       const y = Math.log(pa[t]), x = [Math.log(pb[t]), 1];
-      R = R ? [[P[0][0] + Vw, P[0][1]], [P[1][0], P[1][1] + Vw]] : [[0, 0], [0, 0]];
+      const R = [[P[0][0] + Vw, P[0][1]], [P[1][0], P[1][1] + Vw]];
       const yhat = x[0] * th[0] + x[1] * th[1];
       const Rx = [R[0][0] * x[0] + R[0][1] * x[1], R[1][0] * x[0] + R[1][1] * x[1]];
       const Q = x[0] * Rx[0] + x[1] * Rx[1] + Ve;
-      const e = y - yhat;
-      if (t > 20) { z[t] = e / Math.sqrt(Q); beta[t] = th[0]; }
+      e[t] = y - yhat;
+      if (t > 40) { s1 += e[t]; s2 += e[t] * e[t]; }
+      if (t > 40 + W) { s1 -= e[t - W]; s2 -= e[t - W] * e[t - W]; }
+      if (t >= 40 + W) {
+        const m = s1 / W, v = Math.max(s2 / W - m * m, 1e-12);
+        z[t] = e[t] / Math.sqrt(v);
+        beta[t] = th[0];
+      }
       const K = [Rx[0] / Q, Rx[1] / Q];
-      th = [th[0] + K[0] * e, th[1] + K[1] * e];
+      th = [th[0] + K[0] * e[t], th[1] + K[1] * e[t]];
       P = [
         [R[0][0] - K[0] * Rx[0], R[0][1] - K[0] * Rx[1]],
         [R[1][0] - K[1] * Rx[0], R[1][1] - K[1] * Rx[1]],
@@ -116,8 +126,8 @@
       short: "Kalman",
       color: "#7c3aed",
       desc: "A Kalman filter updates the hedge ratio every day; trades the standardized forecast error.",
-      defaults: { delta: 1e-4, entry: 1.5, exit: 0.25, stop: 0 },
-      grid: { delta: [1e-5, 1e-4, 1e-3], entry: [1, 1.5, 2], exit: [0, 0.5], stop: [0] },
+      defaults: { delta: 1e-5, entry: 2, exit: 0.5, stop: 4 },
+      grid: { delta: [1e-6, 1e-5, 1e-4], entry: [1.5, 2, 2.5], exit: [0, 0.5], stop: [4] },
       build(pa, pb, p) {
         const { z, beta } = kalmanZ(pa, pb, p.delta);
         const st = zStateMachine(z, p);
@@ -157,7 +167,8 @@
             z[t] = v;
             if (s === 0) { if (v > p.k) s = -1; else if (v < -p.k) s = 1; }
             else if ((s === 1 && v >= 0) || (s === -1 && v <= 0)) s = 0;
-            st[t] = t === end - 1 ? 0 : s;
+            // close at the end of a completed trading period (not merely at the end of the data)
+            st[t] = t === c + p.T - 1 ? 0 : s;
           }
         }
         return { st, z, weights: toWeights(st, null) };
