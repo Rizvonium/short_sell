@@ -37,4 +37,4 @@ Holdout result (2021-01 → 2026-10): the pre-registered champion (OU half-life 
 
 Edit `UNIVERSE` in `scripts/fetch_data.py` to add sectors or tickers. Use the `.NS` suffix for NSE.
 
-*Educational project. Backtests ignore borrow fees and market impact. Nothing here is investment advice.*
+*Educational project. Lab and Arena backtests ignore borrow fees; no backtest models market impact. Nothing here is investment advice.*
