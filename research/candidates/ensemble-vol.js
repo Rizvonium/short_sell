@@ -1,4 +1,8 @@
 // Ensemble mean-reversion pairs with continuous sizing and inverse-volatility risk budgets.
+// Each year: pick same-sector pairs (top Gatev SSD over 1y, union top Engle-Granger ADF over up to 3y).
+// Each day: three classic rules (ratio Bollinger, rolling-regression z, Gatev distance) vote on every
+// pair using a jump-robust spread; the pair's position is the average vote, sized by inverse spread vol,
+// levered so the trailing-year average gross is 0.8, and rebalanced only outside a no-trade band.
 // Works in Node (module.exports) and the browser (window.Candidates[id]).
 (function (root) {
   "use strict";
@@ -299,7 +303,7 @@
     id: "ensemble-vol",
     name: "Ensemble vol-parity pairs",
     short: "Ensemble",
-    description: "Scores each pair with three mean-reversion yardsticks and blends them into one position size; quieter pairs get more money so every pair carries similar risk.",
+    description: "Three classic pairs-trading rules vote on each pair of look-alike stocks, and the average vote sets how much to bet that the pair snaps back together. Calmer pairs get more money so each carries similar risk, and sudden news-driven jumps are not bet against.",
     defaults: {
       mode: "rules",     // "rules": average of the three entry/exit rules; "linear": average of clipped z
       Lr: 20,            // ratio Bollinger lookback (library default)
