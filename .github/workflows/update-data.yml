@@ -17,7 +17,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - run: python scripts/fetch_data.py
+      - run: node research/build_tournament.js
       - name: Commit refreshed prices
         run: |
           git config user.name "github-actions[bot]"

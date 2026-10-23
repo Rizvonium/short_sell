@@ -156,7 +156,8 @@ tbody tr.click { cursor: pointer; }
 .champ h3 { font-size: 26px; margin-top: 6px; }
 .champ p { margin-top: 8px; }
 tr.holdout td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
-@media (max-width: 760px) { .champ { grid-template-columns: 1fr; } }
+.champ > div { min-width: 0; }
+@media (max-width: 760px) { .champ { grid-template-columns: minmax(0, 1fr); } }
 
 /* Game */
 .game-hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }

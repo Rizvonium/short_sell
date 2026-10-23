@@ -594,8 +594,8 @@
   }
   function renderChampion() {
     const champ = TN.strategies.find((s) => TN.prereg && s.id === TN.prereg.id);
-    const best = TN.strategies.slice().sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
-    const bestBase = TN.strategies.filter((s) => s.kind !== "candidate").sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
+    const best = TN.strategies.filter((s) => s.kind !== "benchmark").sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
+    const bestBase = TN.strategies.filter((s) => s.kind === "baseline").sort((a, b) => b.holdoutScore - a.holdoutScore)[0];
     const c = champ || best;
     const line = (s, mk) => {
       const h = s.markets[mk].holdout, d = s.markets[mk].dev;
@@ -607,14 +607,21 @@
         <h3>${esc(c.name)}</h3>
         <p class="muted">${esc(c.description)}</p>
         ${champ && TN.prereg.date ? `<p class="small muted">Chosen on ${esc(TN.prereg.date)} from development results only, before any strategy was run on 2021+ prices.</p>` : ""}
+        <p class="small">${tnDecayText()}</p>
       </div><div>
         <div class="stats">
           <div class="stat"><div class="k">Holdout score</div><div class="v ${cls(c.holdoutScore)}">${f2(c.holdoutScore)}</div><div class="s">rank ${rank} of ${TN.strategies.length} · dev ${f2(c.devScore)}</div></div>
           <div class="stat"><div class="k">Best baseline</div><div class="v">${f2(bestBase.holdoutScore)}</div><div class="s">${esc(bestBase.name)}</div></div>
-          <div class="stat"><div class="k">Holdout winner</div><div class="v">${f2(best.holdoutScore)}</div><div class="s">${esc(best.name)}</div></div>
+          <div class="stat"><div class="k">Market-neutral winner</div><div class="v">${f2(best.holdoutScore)}</div><div class="s">${esc(best.name)}</div></div>
         </div>
         <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Market</th><th class="num">Dev Sharpe</th><th class="num">Holdout Sharpe</th><th class="num">Holdout CAGR</th><th class="num">Holdout max DD</th></tr></thead><tbody>${line(c, "US")}${line(c, "IN")}</tbody></table></div>
       </div></div>`;
+  }
+  function tnDecayText() {
+    const avg = (a) => a.reduce((x, y) => x + y, 0) / (a.length || 1);
+    const decay = (k) => avg(TN.strategies.filter(k).map((s) => s.devScore - s.holdoutScore));
+    const nc = decay((s) => s.kind === "candidate"), nb = decay((s) => s.kind === "baseline");
+    return `From development to holdout, the new strategies lost ${f2(nc)} Sharpe on average and the simple baselines lost ${f2(nb)}. More tuning bought a better past, not a better future.`;
   }
   function renderTnTable() {
     const key = $("tn-sort").value;
