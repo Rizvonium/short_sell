@@ -1,53 +1,71 @@
-// Twin divergence. Built on Chen, Chen, Chen & Li (2019, Management Science), "Empirical
-// Investigation of an Equity Pairs Trading Strategy": every stock is paired with a portfolio of its
-// most correlated stocks (its "twins"), and the signal is how far the stock has fallen behind or run
-// ahead of that twin portfolio. Adapted to a ~50-stock universe and to daily data:
-//   - twins: the k stocks (same market, any sector) whose market-adjusted daily returns correlate
-//     most with the stock's over the past 5 years (formation, refit each January);
-//   - twin portfolio: the non-negative least-squares basket of those twins that best replicates
-//     the stock's daily returns (a "synthetic twin"); the paper's equal-weight x beta basket is
-//     available as basket: "ew";
-//   - signal: the stock's cumulative residual return vs its synthetic twin, measured against its
-//     own 20-day mean in units of the formation residual volatility; daily residuals are clipped at
-//     3 sigma so single-day jumps (likely news) are not mistaken for a divergence that will close;
-//   - trade: when the stock lags its twin by more than 2 units, buy it and short the twin basket
-//     (the reverse when it runs ahead); close when the spread is back at its 20-day mean.
-//     Each trade is a beta-hedged pair; trades net into one book, gross capped at 1.
-// mode: "monthly" runs the paper's own rule instead (monthly quintile sort on last month's
-// RetDiff = beta * twinReturn - ownReturn, long the laggards, short the leaders).
+// Twin divergence: a replication of Chen, Chen, Chen & Li (2019, Management Science),
+// "Empirical Investigation of an Equity Pairs Trading Strategy", adapted to a ~50-stock market.
+//
+// Paper: for each stock, find the 50 stocks whose monthly returns correlated most with it over the
+// previous 5 years ("pairs"); the pairs portfolio is their equal-weight return, and beta is the
+// stock's regression slope on it over the same 5 years. Each month,
+//   RetDiff_i = beta_i * (pairsReturn_i - rf) - (ownReturn_i - rf)   (last month's returns);
+// stocks with high RetDiff (they lagged their twins) are bought, low RetDiff are sold short,
+// held one month (decile 10 minus decile 1).
+//
+// Adaptation here (paper design first, then a few cost/risk changes; 14 dev configurations in all):
+//   - formation each January on up to 5 years (1260 days) of NON-overlapping weekly returns
+//     (monthly returns would give only 60 points for ~50 candidates); twins chosen within the
+//     stock's own market, any sector, by raw return correlation (as in the paper);
+//   - k = 10 twins per stock (paper: 50 out of thousands; here ~20% of the market);
+//   - beta = OLS slope of the stock's weekly return on the equal-weight twin return;
+//   - signal: RetDiff = beta * twinReturn - ownReturn over the last WEEK (rf ignored), divided by
+//     the stock's formation residual vol vs its twins (so volatile names do not always win the sort);
+//     the paper's one-month horizon had ~zero Sharpe in these large caps (params look/step = 21);
+//   - long the top quintile, short the bottom quintile, equal weight, rebalanced weekly with a
+//     buffer (a held name stays while it ranks in the top/bottom 40%) to cut turnover;
+//   - each stock is hedged with beta x its equal-weight twin basket (long laggard / short its twins,
+//     short leader / long its twins), legs netted into one book scaled to gross 1: the trade is the
+//     stock-vs-twins gap itself (residual reversal) rather than a raw long/short stock sort.
+//     hedge: false, standardize: false, look = step = 21, hold = 0.2 is the paper's plain rule.
 (function (root) {
   "use strict";
 
   function create(params) {
     const P = params;
-    let model = null; // { list: [{ s, peers, wts, beta, sig }] }
-    let lastRebal = -Infinity;
-    const book = []; // monthly mode: overlapping tranches
-    const pos = {}; // band mode: sym -> { side, peers, wts, beta, sig, sh: { sym: shares } }
+    let model = null; // [{ s, peers, beta }]
+    let last = -Infinity;
+    const book = [];
 
-    // ---------- formation: twins, twin-portfolio weights, residual volatility (data <= now) ----------
     function form(ctx) {
-      const T = ctx.now;
-      const from = Math.max(0, T - P.formDays);
-      const n = T - from;
+      const T = ctx.now, W = P.week;
       const syms = ctx.syms.slice().sort();
+      // sample points T, T-W, T-2W, ... within the formation window
+      const pts = [];
+      for (let t = T; t - W >= Math.max(0, T - P.formDays); t -= W) pts.push(t);
+      const n = pts.length;
       const R = {}, valid = [];
       for (const s of syms) {
-        const w = ctx.window(s, from, T);
         const r = new Float64Array(n).fill(NaN);
         let c = 0;
-        for (let k = 1; k < w.length; k++) {
-          const a = w[k - 1], b = w[k];
-          if (a > 0 && b > 0) { r[k - 1] = b / a - 1; c++; }
+        for (let k = 0; k < n; k++) {
+          const p1 = ctx.px(s, pts[k]), p0 = ctx.px(s, pts[k] - W);
+          if (p0 > 0 && p1 > 0) { r[k] = p1 / p0 - 1; c++; }
         }
         if (c >= P.minObs) { R[s] = r; valid.push(s); }
       }
       const m = valid.length;
-      // similarity returns: raw (the paper), or residual to the equal-weight market so that twins
-      // share more than the market factor (industry peers, sister companies)
+      const corr = (x, y) => {
+        let c = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+        for (let k = 0; k < n; k++) {
+          const a = x[k], b = y[k];
+          if (a !== a || b !== b) continue;
+          c++; sx += a; sy += b; sxx += a * a; syy += b * b; sxy += a * b;
+        }
+        if (c < P.minObs) return NaN;
+        const vx = sxx - (sx * sx) / c, vy = syy - (sy * sy) / c;
+        return vx > 0 && vy > 0 ? (sxy - (sx * sy) / c) / Math.sqrt(vx * vy) : NaN;
+      };
+      // similarity returns: raw (the paper) or residual to the equal-weight market return
       let S = R;
-      if (P.twinCorr === "resid") {
-        S = {};
+      const mbeta = {};
+      {
+        const Sr = {};
         const mk = new Float64Array(n).fill(NaN);
         for (let k = 0; k < n; k++) {
           let a = 0, c = 0;
@@ -55,34 +73,18 @@
           if (c * 2 >= m) mk[k] = a / c;
         }
         for (const s of valid) {
-          const xs = [], ys = [], r = R[s];
+          const r = R[s], xs = [], ys = [];
           for (let k = 0; k < n; k++) if (r[k] === r[k] && mk[k] === mk[k]) { xs.push(mk[k]); ys.push(r[k]); }
           const { alpha, beta } = ctx.Stats.ols(xs, ys);
           const e = new Float64Array(n).fill(NaN);
           for (let k = 0; k < n; k++) if (r[k] === r[k] && mk[k] === mk[k]) e[k] = r[k] - alpha - beta * mk[k];
-          S[s] = e;
+          Sr[s] = e;
+          mbeta[s] = isFinite(beta) ? beta : 1;
         }
+        if (P.twinCorr === "resid") S = Sr;
       }
-      // pairwise-complete Pearson correlations of daily similarity returns
-      const C = Array.from({ length: m }, () => new Float64Array(m));
-      for (let i = 0; i < m; i++) {
-        const x = S[valid[i]];
-        for (let j = i + 1; j < m; j++) {
-          const y = S[valid[j]];
-          let c = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-          for (let k = 0; k < n; k++) {
-            const a = x[k], b = y[k];
-            if (a !== a || b !== b) continue;
-            c++; sx += a; sy += b; sxx += a * a; syy += b * b; sxy += a * b;
-          }
-          let rho = NaN;
-          if (c >= P.minObs) {
-            const vx = sxx - (sx * sx) / c, vy = syy - (sy * sy) / c;
-            if (vx > 0 && vy > 0) rho = (sxy - (sx * sy) / c) / Math.sqrt(vx * vy);
-          }
-          C[i][j] = C[j][i] = rho;
-        }
-      }
+      const C = Array.from({ length: m }, () => new Float64Array(m).fill(NaN));
+      for (let i = 0; i < m; i++) for (let j = i + 1; j < m; j++) C[i][j] = C[j][i] = corr(S[valid[i]], S[valid[j]]);
       const list = [];
       for (let i = 0; i < m; i++) {
         const cand = [];
@@ -90,110 +92,111 @@
         cand.sort((a, b) => b[0] - a[0] || (a[1] < b[1] ? -1 : 1));
         const peers = cand.slice(0, P.k).map((c) => c[1]);
         if (peers.length < Math.min(P.k, 3)) continue;
-        // regress the stock's raw daily returns on its twins' (days where all are present)
-        const x = R[valid[i]];
-        const rows = [], ys = [];
+        // beta of the stock on its equal-weight twin portfolio (formation data only)
+        const xs = [], ys = [], own = R[valid[i]];
         for (let k = 0; k < n; k++) {
-          if (x[k] !== x[k]) continue;
-          const row = peers.map((p) => R[p][k]);
-          if (row.some((v) => v !== v)) continue;
-          rows.push(row); ys.push(x[k]);
+          if (own[k] !== own[k]) continue;
+          let a = 0, c = 0;
+          for (const p of peers) { const v = R[p][k]; if (v === v) { a += v; c++; } }
+          if (c * 2 < peers.length) continue;
+          xs.push(a / c); ys.push(own[k]);
         }
-        if (ys.length < P.minObs) continue;
-        const K = peers.length, T2 = ys.length;
-        const mx = new Float64Array(K);
-        let my = 0;
-        for (let r = 0; r < T2; r++) { my += ys[r]; for (let a = 0; a < K; a++) mx[a] += rows[r][a]; }
-        my /= T2; for (let a = 0; a < K; a++) mx[a] /= T2;
-        const A = Array.from({ length: K }, () => new Float64Array(K)), b = new Float64Array(K);
-        for (let r = 0; r < T2; r++) {
-          const y = ys[r] - my;
-          for (let a = 0; a < K; a++) {
-            const xa = rows[r][a] - mx[a];
-            b[a] += xa * y;
-            for (let c = a; c < K; c++) A[a][c] += xa * (rows[r][c] - mx[c]);
-          }
-        }
-        for (let a = 0; a < K; a++) for (let c = 0; c < a; c++) A[a][c] = A[c][a];
-        let wts;
-        if (P.basket === "nnls") {
-          // non-negative least squares by projected coordinate descent on the normal equations:
-          // the long-only twin basket with the smallest residual variance
-          wts = new Float64Array(K);
-          for (let it = 0; it < 500; it++) {
-            let delta = 0;
-            for (let a = 0; a < K; a++) {
-              let g = b[a];
-              for (let c = 0; c < K; c++) if (c !== a) g -= A[a][c] * wts[c];
-              const v = Math.max(0, g / A[a][a]);
-              delta = Math.max(delta, Math.abs(v - wts[a]));
-              wts[a] = v;
-            }
-            if (delta < 1e-12) break;
-          }
-        } else {
-          // the paper: equal-weight twins, scaled by the stock's OLS beta to that basket
-          let sxy = 0, sxx = 0;
-          for (let a = 0; a < K; a++) { sxy += b[a] / K; for (let c = 0; c < K; c++) sxx += A[a][c] / (K * K); }
-          const beta = Math.max(P.betaMin, Math.min(P.betaMax, sxx > 0 ? sxy / sxx : 1));
-          wts = new Float64Array(K).fill(beta / K);
-        }
-        const used = [], uw = [];
-        for (let a = 0; a < K; a++) if (wts[a] > 1e-6) { used.push(peers[a]); uw.push(wts[a]); }
-        let tot = uw.reduce((u, v) => u + v, 0);
-        if (!used.length || tot <= 0) continue;
-        if (tot > P.betaMax) { for (let a = 0; a < uw.length; a++) uw[a] *= P.betaMax / tot; tot = P.betaMax; }
-        // residual volatility of the stock against its twin portfolio
-        let s1 = 0, s2 = 0;
-        for (let r = 0; r < T2; r++) {
-          let f = 0;
-          for (let a = 0; a < K; a++) { const ia = used.indexOf(peers[a]); if (ia >= 0) f += uw[ia] * rows[r][a]; }
-          const e = ys[r] - f;
-          s1 += e; s2 += e * e;
-        }
-        const sig = Math.sqrt(Math.max(1e-12, (s2 - (s1 * s1) / T2) / (T2 - 1)));
-        list.push({ s: valid[i], peers: used, wts: uw, beta: tot, sig });
+        if (xs.length < P.minObs) continue;
+        let beta = ctx.Stats.ols(xs, ys).beta;
+        beta = isFinite(beta) ? Math.max(P.betaMin, Math.min(P.betaMax, beta)) : 1;
+        // residual sd per formation interval of own - beta * twins (to standardize RetDiff)
+        let e1 = 0, e2 = 0;
+        for (let k = 0; k < xs.length; k++) { const e = ys[k] - beta * xs[k]; e1 += e; e2 += e * e; }
+        const sd = Math.sqrt(Math.max(1e-12, (e2 - (e1 * e1) / xs.length) / (xs.length - 1)));
+        list.push({ s: valid[i], peers, beta, sd, mb: mbeta[valid[i]] });
       }
-      model = { list };
+      model = list;
     }
 
-    // ---------- monthly mode: the paper's cross-sectional sort ----------
     function tranche(ctx) {
-      const t = ctx.now, H = P.H;
-      if (!model || t - H < 0) return {};
-      const ret = (s) => {
-        const p0 = ctx.px(s, t - H), p1 = ctx.px(s, t);
-        return p0 > 0 && p1 > 0 ? p1 / p0 - 1 : NaN;
-      };
+      const t = ctx.now, L = P.look;
+      if (!model || t - L < 0) return {};
       const cache = {};
-      const r = (s) => (s in cache ? cache[s] : (cache[s] = ret(s)));
+      const ret = (s) => {
+        if (s in cache) return cache[s];
+        const p0 = ctx.px(s, t - L), p1 = ctx.px(s, t);
+        return (cache[s] = p0 > 0 && p1 > 0 ? p1 / p0 - 1 : NaN);
+      };
       const sig = [];
-      for (const e of model.list) {
-        const own = r(e.s);
+      for (const e of model) {
+        const own = ret(e.s);
         if (!isFinite(own)) continue;
-        let s = 0, ws = 0;
-        e.peers.forEach((p, a) => { const v = r(p); if (isFinite(v)) { s += e.wts[a] * v; ws += e.wts[a]; } });
-        if (ws * 2 < e.beta) continue;
-        let d = (s * e.beta) / ws - own; // RetDiff > 0: the stock lagged its twins
-        if (P.standardize) d /= e.sig * Math.sqrt(H);
+        let a = 0, c = 0;
+        for (const p of e.peers) { const v = ret(p); if (isFinite(v)) { a += v; c++; } }
+        if (c * 2 < e.peers.length) continue;
+        let d = e.beta * (a / c) - own; // > 0: the stock lagged its twins
+        if (P.standardize) d /= e.sd * Math.sqrt(L / P.week);
         sig.push({ s: e.s, d });
       }
       const N = sig.length;
       if (N < 10) return {};
       sig.sort((a, b) => b.d - a.d || (a.s < b.s ? -1 : 1));
-      const w = {};
       const q = Math.max(1, Math.floor(N * P.frac));
-      for (let i = 0; i < q; i++) {
-        w[sig[i].s] = 0.5 / q;
-        w[sig[N - 1 - i].s] = -0.5 / q;
+      // buffer rule (cost mitigation, Novy-Marx & Velikov 2016): a held name stays in its leg
+      // while it ranks within the top/bottom `hold` fraction; free slots go to the strongest
+      // new names. hold = frac is the plain quintile sort.
+      const hq = Math.max(q, Math.floor(N * P.hold));
+      const prev = book.length ? book[book.length - 1] : {};
+      const pick = (ranked) => {
+        const out = [], keepSet = new Set();
+        for (let i = 0; i < hq; i++) if (prev[ranked[i].s] && (prev[ranked[i].s] > 0) === (ranked === sig)) keepSet.add(ranked[i].s);
+        for (const x of ranked.slice(0, hq)) if (keepSet.has(x.s) && out.length < q) out.push(x.s);
+        for (const x of ranked) { if (out.length >= q) break; if (!out.includes(x.s)) out.push(x.s); }
+        return out;
+      };
+      let longs = pick(sig), shorts = pick(sig.slice().reverse());
+      let rw = null;
+      if (P.weighting === "rank") {
+        // all names, weight proportional to centred rank of RetDiff (Lo-MacKinlay style contrarian)
+        rw = {};
+        longs = []; shorts = [];
+        sig.forEach((x, i) => {
+          const v = (N - 1) / 2 - i;
+          if (v > 0) { longs.push(x.s); rw[x.s] = v; } else if (v < 0) { shorts.push(x.s); rw[x.s] = -v; }
+        });
+      }
+      // leg sizes: dollar neutral (0.5 / 0.5), or market-beta neutral (gross 1, sum w * beta = 0)
+      let gl = 0.5, gs = 0.5;
+      if (P.betaNeutral) {
+        const mb = {};
+        for (const e of model) mb[e.s] = e.mb;
+        const bl = longs.reduce((a, s) => a + mb[s], 0) / longs.length;
+        const bs = shorts.reduce((a, s) => a + mb[s], 0) / shorts.length;
+        if (bl > 0.2 && bs > 0.2) { gl = bs / (bl + bs); gs = bl / (bl + bs); }
+        gl = Math.max(0.35, Math.min(0.65, gl)); gs = 1 - gl; // keep close to dollar neutral
+      }
+      const w = {};
+      const sum = (a) => a.reduce((u, s) => u + (rw ? rw[s] : 1), 0);
+      const sl = sum(longs), ss = sum(shorts);
+      for (const s of longs) w[s] = (gl * (rw ? rw[s] : 1)) / sl;
+      for (const s of shorts) w[s] = (-gs * (rw ? rw[s] : 1)) / ss;
+      if (P.hedge) {
+        // trade each divergence as a stock-vs-twins pair: offset every stock with beta x its
+        // equal-weight twin basket, net the book, rescale to gross 1 (residual reversal)
+        const byS = {};
+        for (const e of model) byS[e.s] = e;
+        const h = {};
+        for (const s in w) {
+          h[s] = (h[s] || 0) + w[s];
+          const e = byS[s], live = e.peers.filter((p) => ctx.px(p, t) > 0);
+          for (const p of live) h[p] = (h[p] || 0) - (w[s] * e.beta) / live.length;
+        }
+        let g = 0;
+        for (const s in h) g += Math.abs(h[s]);
+        for (const s in h) h[s] = g > 0 ? h[s] / g : 0;
+        return h;
       }
       return w;
     }
 
-    function monthly(ctx) {
-      const t = ctx.now;
-      if (t - lastRebal < P.step) return null;
-      lastRebal = t;
+    function weights(ctx) {
+      if (ctx.now - last < P.step) return null;
+      last = ctx.now;
       book.push(tranche(ctx));
       while (book.length > P.tranches) book.shift();
       const out = {};
@@ -201,102 +204,7 @@
       return out;
     }
 
-    // ---------- band mode: daily stock-vs-twin spread, open on a stretch, close on reversion ----------
-    // x = cumulative residual return vs the twin portfolio over the last L days (daily residuals
-    // clipped at +-winsor sigmas); z = (x_today - mean(x)) / scale. With zNorm "formation" the
-    // scale is the formation residual sd times sqrt((L^2 - 1) / (6L)), the typical spread of a
-    // random walk's levels around their L-day mean: entries then cluster in turbulent markets,
-    // when liquidity-driven divergences are largest and revert most (Nagel 2012), and calm markets,
-    // where a 2-sd move of a tiny rolling sd does not pay for the round trip, are mostly skipped.
-    // zNorm "rolling" is the classic Bollinger band (rolling L-day sd).
-    function zOf(ctx, s, peers, wts, beta, sig, lr) {
-      const t = ctx.now, L = P.L, cap = P.winsor > 0 ? P.winsor * sig : Infinity;
-      if (t - L < 0) return NaN;
-      let x = 0, sx = 0, sxx = 0, n = 0;
-      for (let d = t - L + 1; d <= t; d++) {
-        const ri = lr(s, d);
-        if (ri !== ri) return NaN;
-        let a = 0, ws = 0;
-        for (let j = 0; j < peers.length; j++) {
-          const v = lr(peers[j], d);
-          if (v === v) { a += wts[j] * (Math.exp(v) - 1); ws += wts[j]; }
-        }
-        if (ws * 2 < beta) return NaN;
-        const e = Math.exp(ri) - 1 - (a * beta) / ws; // residual return vs the twin portfolio
-        x += e > cap ? cap : e < -cap ? -cap : e;
-        sx += x; sxx += x * x; n++;
-      }
-      const m = sx / n, v = sxx / n - m * m;
-      if (P.zNorm === "formation") return (x - m) / (sig * Math.sqrt((n * n - 1) / (6 * n)));
-      if (!(v > 1e-14)) return NaN;
-      return (x - m) / Math.sqrt((v * n) / (n - 1));
-    }
-
-    function band(ctx) {
-      if (!model) return null;
-      const t = ctx.now, E = ctx.equity();
-      const cache = new Map();
-      const lr = (s, d) => {
-        const key = s + "@" + d;
-        let v = cache.get(key);
-        if (v === undefined) {
-          const p0 = ctx.px(s, d - 1), p1 = ctx.px(s, d);
-          v = p0 > 0 && p1 > 0 ? Math.log(p1 / p0) : NaN;
-          cache.set(key, v);
-        }
-        return v;
-      };
-      let changed = false;
-      // exits first; each open trade is judged on its own spread (the twins it was opened with)
-      for (const s of Object.keys(pos).sort()) {
-        const q = pos[s];
-        const z = zOf(ctx, s, q.peers, q.wts, q.beta, q.sig, lr);
-        if (!isFinite(z)) continue;
-        if ((q.side > 0 && z >= -P.exit) || (q.side < 0 && z <= P.exit)) { delete pos[s]; changed = true; }
-      }
-      // entries, strongest stretch first, while there is room under the gross cap
-      const cands = [];
-      for (const e of model.list) {
-        if (pos[e.s]) continue;
-        const z = zOf(ctx, e.s, e.peers, e.wts, e.beta, e.sig, lr);
-        if (isFinite(z) && Math.abs(z) > P.entry) cands.push({ e, z });
-      }
-      cands.sort((a, b) => Math.abs(b.z) - Math.abs(a.z) || (a.e.s < b.e.s ? -1 : 1));
-      const u = 1 / (2 * P.slots);
-      const target = () => {
-        const w = {};
-        for (const s in pos) for (const [k, sh] of Object.entries(pos[s].sh)) {
-          const p = ctx.px(k, t);
-          if (p > 0) w[k] = (w[k] || 0) + (sh * p) / E;
-        }
-        return w;
-      };
-      const grossOf = (w) => { let g = 0; for (const k in w) g += Math.abs(w[k]); return g; };
-      let w = target();
-      for (const { e, z } of cands) {
-        const side = z < 0 ? 1 : -1; // z < 0: the stock fell behind its twins -> buy it
-        const pi = ctx.px(e.s, t);
-        let ws = 0;
-        e.peers.forEach((p, a) => { if (ctx.px(p, t) > 0) ws += e.wts[a]; });
-        if (!(pi > 0) || ws * 2 < e.beta) continue;
-        // stock leg u of equity; twin legs u * beta split by the basket weights (beta-neutral pair)
-        const sh = { [e.s]: (side * u * E) / pi };
-        e.peers.forEach((p, a) => {
-          const pp = ctx.px(p, t);
-          if (pp > 0) sh[p] = (sh[p] || 0) - (side * u * e.beta * e.wts[a] * E) / ws / pp;
-        });
-        const trial = Object.assign({}, w);
-        for (const [k, v] of Object.entries(sh)) trial[k] = (trial[k] || 0) + (v * ctx.px(k, t)) / E;
-        if (grossOf(trial) > P.maxGross) continue;
-        pos[e.s] = { side, peers: e.peers, wts: e.wts, beta: e.beta, sig: e.sig, sh };
-        w = trial;
-        changed = true;
-      }
-      // positions are held in shares, so untouched trades drift and cost nothing
-      return changed ? target() : null;
-    }
-
-    return { form, weights: (ctx) => (P.mode === "band" ? band(ctx) : monthly(ctx)) };
+    return { form, weights };
   }
 
   const def = {
@@ -304,23 +212,23 @@
     name: "Twin divergence",
     short: "Twins",
     description:
-      "Each stock gets a 'synthetic twin': the basket of its closest look-alike stocks that best tracks it. When a stock falls unusually far behind its twin, buy it and short the twin; when it runs ahead, do the opposite; close once the gap is back to normal.",
+      "Every stock gets ten 'twins': the stocks that moved most like it over the past five years. Each week, buy the stocks that fell furthest behind their twins and short the ones that ran furthest ahead, hedging each with its twins, betting the gap closes.",
     defaults: {
-      mode: "band",
-      k: 5,              // twin candidates per stock
-      twinCorr: "resid", // rank twins by "raw" (the paper) or market-adjusted ("resid") correlation
-      basket: "nnls",    // "nnls" replicating basket, or "ew" equal weight x OLS beta (the paper)
-      formDays: 1260,    // formation window: 5 years of daily returns (or what is available)
-      minObs: 500,       // min daily returns for a stock to be eligible
-      betaMin: 0.25, betaMax: 2.5,
-      // band mode
-      L: 20, entry: 2, exit: 0, // spread vs its 20-day mean: open beyond 2, close at the mean
-      winsor: 3,         // clip daily residuals at 3 formation sigmas (jumps = news, not noise)
-      zNorm: "formation",
-      slots: 15,         // each trade puts 1/(2*slots) of equity in the stock leg
-      maxGross: 1,
-      // monthly mode (the paper's rule)
-      H: 21, step: 21, tranches: 1, standardize: false, frac: 0.2,
+      k: 10,           // twins per stock
+      formDays: 1260,  // 5-year formation window
+      week: 5,         // formation return interval (trading days): non-overlapping weekly returns
+      minObs: 100,     // min weekly returns for eligibility / correlation / beta
+      betaMin: 0, betaMax: 3,
+      look: 5,         // RetDiff measured over the last week (paper: month; months did not work here)
+      step: 5,         // rebalance weekly
+      tranches: 1,     // overlapping holding portfolios (1 = plain, no overlap)
+      frac: 0.2,       // long top quintile, short bottom quintile
+      hold: 0.4,       // buffer: keep a held name while it stays in the top/bottom `hold` fraction
+      twinCorr: "raw", // rank twins by "raw" weekly-return correlation (the paper) or "resid" (market-adjusted)
+      weighting: "equal", // "equal" (top/bottom frac) or "rank" (every name, centred-rank weights)
+      hedge: true,     // hedge each stock with beta x its twin basket (pair trade) instead of a plain L/S sort
+      betaNeutral: false, // size legs so long and short market betas offset (dollar net within +-0.15)
+      standardize: true, // divide RetDiff by the stock's formation residual vol vs its twins
     },
     create,
   };

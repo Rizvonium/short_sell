@@ -292,17 +292,23 @@
     name: "Regime-guard pairs",
     short: "Guarded",
     description: "Trades look-alike stocks in the same sector that have moved together for years, betting " +
-      "that a sudden gap between them closes. Every pair is checked daily: if the gap keeps widening, " +
-      "drags on too long, was caused by news, or the two stocks stop moving together, the trade is closed " +
-      "and the pair is benched for a while.",
+      "that a sudden gap between them closes. When stocks inside each sector start scattering more than " +
+      "usual (a turbulent regime), new bets are made smaller. Per-pair stop-losses and ban lists were " +
+      "tested and dropped because they cut profits more than losses.",
     defaults: {
       N: 20, K: 10, trainDays: 756, minTrain: 504,   // book: top-N ADF pairs, 1/K of equity per open pair
       L: 20, entry: 2, exit: 0,                      // ratio Bollinger (library / textbook defaults)
-      stop: 2, maxHold: 40, cool: 20,                // stop-loss (extra entry sds), time stop, cool-down
-      monitor: true, breakZ: 3, clearZ: 2, corrWin: 63, corrForm: 252, corrZ: 2.326, corrClear: 1.282,
-      news: true, jumpK: 3, jumpDays: 5, volWin: 63,
+      // Pair-level guards are implemented but OFF by default: in the dev-split ablation every one of them
+      // (stop-loss, time stop, cool-down/ban list, relationship monitor, news filter) lowered Sharpe,
+      // mostly by benching pairs and cutting gross. Set them to re-enable (e.g. stop: 2, maxHold: 40,
+      // cool: 20, monitor: true, news: true).
+      stop: 0, maxHold: 0, cool: 0,                  // stop-loss (extra entry sds), time stop, cool-down
+      monitor: false, breakZ: 3, clearZ: 2, corrWin: 63, corrForm: 252, corrZ: 2.326, corrClear: 1.282,
+      news: false, jumpK: 3, jumpDays: 5, volWin: 63,
       invVol: false, volLo: 0.5, volHi: 2,
-      brake: "none", brakeMin: 0.25, brakeShort: 21, brakeLong: 504, brakeMinObs: 126,
+      // Portfolio-level brake kept on: new positions are scaled down when 21-day within-sector return
+      // dispersion runs above its 2-year average (floor 0.25x).
+      brake: "disp", brakeMin: 0.25, brakeShort: 21, brakeLong: 504, brakeMinObs: 126,
       maxGross: 1,
     },
     create,
