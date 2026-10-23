@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Twin Shares Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Pairs trading on real US and Indian stock prices: scanner, train/test backtests, strategy arena and a trading game.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=JetBrains+Mono:wght@400;600;700&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><b><i>Twin</i> <em>Shares</em> Lab</b><span class="muted small">pairs trading on real prices</span></div>
+    <div class="stamp" id="stamp">loading prices…</div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#story">Coke vs Pepsi</a>
+      <a href="#scan">Scanner</a>
+      <a href="#lab">Train / Test Lab</a>
+      <a href="#tournament">Tournament</a>
+      <a href="#arena">Strategy Arena</a>
+      <a href="#game">Trading Game</a>
+      <a href="#research">Research</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="loading" id="loading">Loading Yahoo Finance price history for 97 US and NSE stocks…</div>
+
+  <!-- STORY -->
+  <section class="tab" id="tab-story" hidden>
+    <div class="eyebrow">The headline trade · PEP vs KO since 1972</div>
+    <h1>Buy the twin that fell behind. Short the one that ran ahead.</h1>
+    <p class="lede">Coca-Cola and Pepsi sell the same thing to the same people, so their shares tend to move together. When one jumps and the other doesn't, the gap often closes. Below, the rule is run on every trading day since June 1972 using dividend-adjusted prices, next to its exact mirror image.</p>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Look-back for "fell behind"</span>
+          <select id="st-k"><option value="1">1 day</option><option value="5" selected>5 days</option><option value="20">20 days (1 month)</option><option value="60">60 days</option></select></label>
+        <label class="field"><span>Trading cost per side</span>
+          <select id="st-cost"><option value="0">0 bps (paper)</option><option value="1">1 bp</option><option value="3">3 bps</option><option value="5">5 bps</option><option value="10" >10 bps</option></select></label>
+        <label class="field"><span>Start year</span>
+          <select id="st-from"></select></label>
+      </div>
+      <div class="stats" id="st-stats"></div>
+      <div class="legend" id="st-legend"></div>
+      <div class="chart tall"><canvas id="st-chart"></canvas></div>
+      <p class="note">Growth of $1, log scale. The position is 50% long the laggard and 50% short the leader, recomputed at each close and held until the leader changes. Zero cost is the "on paper" number from the clip. Switch on a few basis points of cost and watch how much of the edge survives a realistic trading bill.</p>
+    </div>
+  </section>
+
+  <!-- SCANNER -->
+  <section class="tab" id="tab-scan" hidden>
+    <div class="eyebrow">Live opportunities</div>
+    <h2>Which twins are stretched right now?</h2>
+    <p class="muted">Every pair inside the same sector is tested for cointegration (Engle-Granger, ADF on the regression residual). Pairs that pass and sit beyond ±2 standard deviations today show up as signals.</p>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="sc-mkt"><option value="US">United States (NYSE/Nasdaq)</option><option value="IN">India (NSE)</option></select></label>
+        <label class="field"><span>Test window</span><select id="sc-win"><option value="252">1 year</option><option value="504" selected>2 years</option><option value="756">3 years</option><option value="1260">5 years</option></select></label>
+        <label class="field"><span>Z-score look-back</span><select id="sc-L"><option>30</option><option selected>60</option><option>90</option></select></label>
+        <label class="check"><input type="checkbox" id="sc-only"> Only show signals</label>
+      </div>
+      <div class="stats" id="sc-stats"></div>
+      <div class="table-wrap"><table id="sc-table"></table></div>
+    </div>
+    <div class="panel" id="sc-detail"></div>
+  </section>
+
+  <!-- LAB -->
+  <section class="tab" id="tab-lab" hidden>
+    <div class="eyebrow">Train on the past, test on the unseen</div>
+    <h2>Train / Test Lab</h2>
+    <p class="muted">Parameters are grid-searched for the best Sharpe ratio on the training years only. They are then frozen and run on the test years the optimizer never saw. The gap between the two is how much was luck.</p>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="lb-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Pair</span><select id="lb-pair"></select></label>
+        <label class="field"><span>Data from</span><select id="lb-from"><option value="2010">2010</option><option value="2014">2014</option><option value="2018" selected>2018</option></select></label>
+        <label class="field"><span>Train share <b id="lb-split-v" class="mono">70%</b></span><input type="range" id="lb-split" min="40" max="90" step="5" value="70"></label>
+        <label class="field"><span>Cost / side</span><select id="lb-cost"><option value="0">0 bps</option><option value="2">2 bps</option><option value="5" selected>5 bps</option><option value="10">10 bps</option></select></label>
+        <button class="primary" id="lb-run">Train &amp; test all strategies</button>
+      </div>
+      <div class="table-wrap"><table id="lb-table"></table></div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <div class="row"><h3 id="lb-sel-title">Equity: train then test</h3></div>
+        <div class="legend" id="lb-legend"></div>
+        <div class="chart"><canvas id="lb-chart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Parameter grid on the training window</h3>
+        <div class="table-wrap" style="max-height:340px"><table id="lb-grid"></table></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Portfolio experiment: pick pairs in train, trade them in test</h3>
+      <p class="muted small">Ranks every same-sector pair by its cointegration strength during training, then trades the top N, the bottom N, and all of them with frozen Z-score settings during the test period. If cointegration predicts reversion, Top should beat Bottom.</p>
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="pf-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Train years</span><select id="pf-train"><option value="2">2</option><option value="3" selected>3</option><option value="5">5</option></select></label>
+        <label class="field"><span>Test starts</span><select id="pf-split"></select></label>
+        <label class="field"><span>N pairs</span><select id="pf-n"><option>5</option><option selected>10</option><option>20</option></select></label>
+        <button class="primary" id="pf-run">Run experiment</button>
+      </div>
+      <div class="stats" id="pf-stats"></div>
+      <div class="legend" id="pf-legend"></div>
+      <div class="chart"><canvas id="pf-chart"></canvas></div>
+      <div class="table-wrap" style="max-height:300px"><table id="pf-table"></table></div>
+    </div>
+  </section>
+
+  <!-- TOURNAMENT -->
+  <section class="tab" id="tab-tournament" hidden>
+    <div class="eyebrow">Walk-forward tournament · 97 stocks · US and NSE</div>
+    <h2>Which strategy actually wins?</h2>
+    <p class="muted">Every strategy below re-selects its pairs or stocks each January using only past prices, then trades the year after with 5 bps per side in costs, a 0.5% a year borrow fee on shorts and at most 1× gross exposure. The strategies were designed and tuned on 2013–2020 only. 2021 to today is a holdout nobody looked at until the champion had been picked.</p>
+    <div class="panel" id="tn-champ"></div>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Rank by</span><select id="tn-sort"><option value="holdoutScore" selected>Holdout Sharpe (2021–today)</option><option value="devScore">Development Sharpe (2013–2020)</option></select></label>
+        <label class="check"><input type="checkbox" id="tn-base" checked> Show baselines</label>
+      </div>
+      <div class="table-wrap"><table id="tn-table"></table></div>
+      <p class="small muted">Score is the average of the US and India Sharpe ratios. Click a row to inspect it.</p>
+    </div>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="tn-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Scale</span><select id="tn-scale"><option value="lin">Linear</option><option value="log">Log</option></select></label>
+        <button class="primary" id="tn-race">Race the holdout</button>
+      </div>
+      <div class="stats" id="tn-race-stats"></div>
+      <div class="board-wrap"><div class="board" id="tn-board"></div></div>
+      <div class="legend" id="tn-legend"></div>
+      <div class="chart tall"><canvas id="tn-chart"></canvas></div>
+      <p class="small muted">Growth of 1 unit of capital. The shaded region is the holdout.</p>
+    </div>
+    <div class="panel" id="tn-detail"></div>
+  </section>
+
+  <!-- ARENA -->
+  <section class="tab" id="tab-arena" hidden>
+    <div class="eyebrow">Seven strategies, one tape</div>
+    <h2>Strategy Arena</h2>
+    <p class="muted">Every strategy gets $100,000 and trades the same prices on the same days. Each one is first tuned on the three years before the race starts, so the race itself is out-of-sample. Press play and watch the leaderboard reshuffle.</p>
+    <div class="panel">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="ar-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Field</span><select id="ar-pair"></select></label>
+        <label class="field"><span>Race length</span><select id="ar-len"><option value="252">Last 1 year</option><option value="504" selected>Last 2 years</option><option value="756">Last 3 years</option><option value="1260">Last 5 years</option></select></label>
+        <label class="field"><span>Cost / side</span><select id="ar-cost"><option value="0">0 bps</option><option value="2">2 bps</option><option value="5" selected>5 bps</option><option value="10">10 bps</option></select></label>
+        <label class="field"><span>Speed</span><select id="ar-speed"><option value="1">1 day / frame</option><option value="3" selected>3 days / frame</option><option value="10">10 days / frame</option></select></label>
+        <button class="primary" id="ar-play">Play</button>
+        <button id="ar-end">Skip to end</button>
+      </div>
+      <div class="stats" id="ar-stats"></div>
+    </div>
+    <div class="panel">
+      <div class="board-wrap"><div class="board" id="ar-board"></div></div>
+    </div>
+    <div class="panel">
+      <div class="legend" id="ar-legend"></div>
+      <div class="chart tall"><canvas id="ar-chart"></canvas></div>
+    </div>
+  </section>
+
+  <!-- GAME -->
+  <section class="tab" id="tab-game" hidden>
+    <div class="eyebrow">Your turn</div>
+    <h2>Pairs Trading Game</h2>
+    <p class="muted">You get $100,000 and a random stretch of real history. Each day, decide: buy the spread (long A, short B), sell it (short A, long B), or stay flat. A Z-score bot trades the same days. Beat it.</p>
+    <div class="panel" id="gm-setup">
+      <div class="controls">
+        <label class="field"><span>Market</span><select id="gm-mkt"><option value="US">United States</option><option value="IN">India</option></select></label>
+        <label class="field"><span>Pair</span><select id="gm-pair"></select></label>
+        <label class="field"><span>Rounds (days)</span><select id="gm-len"><option value="60">60</option><option value="120" selected>120</option><option value="250">250</option></select></label>
+        <label class="check"><input type="checkbox" id="gm-blind" checked> Blind mode (hide names and dates)</label>
+        <label class="check"><input type="checkbox" id="gm-hint" checked> Show z-score</label>
+        <button class="primary" id="gm-start">New game</button>
+      </div>
+    </div>
+    <div class="panel" id="gm-play">
+      <div class="game-hud" id="gm-hud"></div>
+      <div class="actions">
+        <button class="buy" id="gm-long">Buy spread <span class="kbd">B</span></button>
+        <button class="sell" id="gm-short">Sell spread <span class="kbd">S</span></button>
+        <button id="gm-flat">Go flat <span class="kbd">F</span></button>
+        <button class="primary" id="gm-next">Next day <span class="kbd">→</span></button>
+        <button id="gm-next5">+5 days</button>
+        <button id="gm-finish">Fast-forward to end</button>
+      </div>
+      <div class="legend" id="gm-legend"></div>
+      <div class="chart"><canvas id="gm-price"></canvas></div>
+      <div class="chart short"><canvas id="gm-z"></canvas></div>
+      <div id="gm-result"></div>
+    </div>
+    <div class="panel">
+      <h3>Your best games (this browser)</h3>
+      <div class="table-wrap" style="max-height:320px"><table id="gm-scores"></table></div>
+    </div>
+  </section>
+
+  <!-- RESEARCH -->
+  <section class="tab prose" id="tab-research" hidden>
+    <div class="eyebrow">Background</div>
+    <h2>Why twins drift apart and come back</h2>
+    <p>Pairs trading, a form of statistical arbitrage, began on Morgan Stanley's quant desk in the mid-1980s. The idea: two companies exposed to the same economic forces should have share prices that move together. When a gap opens without news to justify it, buying the laggard and shorting the leader bets on the gap closing. The two legs cancel most of the market's direction, so the bet is on the relationship.</p>
+    <h3>What the research found</h3>
+    <ul class="refs">
+      <li><b>Gatev, Goetzmann &amp; Rouwenhorst (2006)</b>, "Pairs Trading: Performance of a Relative-Value Arbitrage Rule", <i>Review of Financial Studies</i>. Matches US stocks by minimum distance between normalized prices over 12 months, then trades 2-sigma divergences for 6 months. Reported positive excess returns from 1962 to 2002. This is the "Distance" strategy in the Arena.</li>
+      <li><b>Do &amp; Faff (2010)</b>, "Does Simple Pairs Trading Still Work?", <i>Financial Analysts Journal</i>. Found that the profits of the same rule declined after the 1990s, partly from competition, though they rose again in turbulent markets.</li>
+      <li><b>Jacobs &amp; Weber (2015)</b>, "On the Determinants of Pairs Trading Profitability", <i>Journal of Financial Markets</i>. Tested the rule across dozens of international stock markets and linked returns to investor attention and news diffusion.</li>
+      <li><b>Chen, Chen, Chen &amp; Li (2019)</b>, "Empirical Investigation of an Equity Pairs Trading Strategy", <i>Management Science</i>. Builds each stock's twins from return correlations and shows that buying stocks that lagged their twins and shorting those that led them earns returns that are not explained by standard short-term reversal or industry momentum.</li>
+      <li><b>Krauss (2017)</b>, "Statistical Arbitrage Pairs Trading Strategies: Review and Outlook", <i>Journal of Economic Surveys</i>. A survey of the distance, cointegration, time-series and stochastic-control approaches used in this lab.</li>
+    </ul>
+    <h3>Why it might work</h3>
+    <ul>
+      <li><b>Overreaction and liquidity.</b> A large buyer or seller pushes one stock away from its twin. The trader who takes the other side is paid for supplying liquidity.</li>
+      <li><b>Slow news diffusion.</b> Information about the shared industry reaches one stock first. The laggard catches up.</li>
+      <li><b>A real economic anchor.</b> Same costs, same customers, same regulation. Cointegration is the statistical name for "this gap cannot widen forever".</li>
+    </ul>
+    <h3>Why it fails</h3>
+    <ul>
+      <li><b>Costs.</b> Rules that trade daily are destroyed by commissions, spreads and short-borrow fees. The Coke vs Pepsi tab lets you watch this happen.</li>
+      <li><b>Broken relationships.</b> A merger, a scandal, or a business-model change (Intel vs AMD after 2015) can make a gap permanent. Stop-losses and re-testing are essential.</li>
+      <li><b>Crowding.</b> In August 2007, many quant funds holding similar pair positions sold at the same time, and spreads blew out for days before snapping back.</li>
+      <li><b>Look-ahead bias.</b> Choosing pairs that look great over the whole history and then backtesting on that same history overstates profits. The Lab and Arena always select and tune on earlier data only.</li>
+    </ul>
+    <h3>Doing this in India vs the US</h3>
+    <ul>
+      <li><b>US:</b> retail brokers allow overnight short selling of borrowable stocks. Hard-to-borrow names carry fees, and the alternative uptick rule applies after a 10% intraday fall.</li>
+      <li><b>India:</b> cash-market short sales by retail traders must be squared off the same day. An overnight pair is normally built with single-stock futures on the F&amp;O list (most names here are on it), or through the stock lending and borrowing (SLB) mechanism. Futures come in fixed lot sizes, so dollar-neutral sizing is approximate.</li>
+    </ul>
+    <h3>How this site computes things</h3>
+    <ul>
+      <li>Prices: daily closes adjusted for splits and dividends from Yahoo Finance. A GitHub Action re-downloads them every weekday.</li>
+      <li>Every signal on day <i>t</i> uses prices up to and including day <i>t</i>, and trades fill at that day's close. Costs are charged per side on traded value. Cash earns nothing and short-borrow fees are ignored.</li>
+      <li>Cointegration: Engle-Granger two-step on log prices with one ADF lag. P-values are interpolated from MacKinnon critical values (−3.90 at 1%, −3.34 at 5%, −3.04 at 10%).</li>
+    </ul>
+    <p class="note">For education and research only. Backtests are not forecasts, and nothing here is investment advice.</p>
+  </section>
+</main>
+<footer><div class="wrap" id="foot">Data: Yahoo Finance adjusted closes. Educational project, not investment advice.</div></footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="js/stats.js"></script>
+<script src="js/strategies.js"></script>
+<script src="js/portfolio.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
